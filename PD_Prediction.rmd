@@ -1,0 +1,319 @@
+---
+title: "Predition of default in auto loan portfolio"
+date: "`r format(Sys.time(), '%m/%d/%Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 6
+    toc_float: true
+    df_print: paged
+    theme: journal
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+# Import data
+```{r Import Data, message=FALSE, warning=FALSE}
+setwd("D:/...some little project")
+library(readxl)
+library(glmnet)
+library(ROCR)
+library(randomForest)
+library(gbm)
+library(xgboost)
+library(tidyverse)
+
+credit = read_excel("data1.xlsx",sheet = "data1")
+rownames(credit) = credit$ACCTNO
+
+sapply(credit,function(x) sum(x<0))
+
+credit <- credit %>% 
+  mutate(ACCTNO = NULL,
+         VAGE = ifelse(VAGE==".", NA, VAGE),
+         VAGE = as.numeric(VAGE),
+         VAGE = if_else(VAGE<18 | is.na(VAGE), median(VAGE,na.rm = T), VAGE), 
+         NEWUSE = ifelse(NEWUSE=="N", "New", "Used"),
+         CBTYPE = case_when(CBTYPE == 1 ~ "Record with Trades",
+                            CBTYPE == 2 ~ "Record w/Inqs. and Pub Recs Only", 
+                            CBTYPE == 3 ~ "Record w/Inqs. Only",
+                            CBTYPE == 4 ~ "Record w/Pub Recs Only",
+                            T ~ "No Record"
+                            ),
+         VDDASAV = case_when(
+           VDDASAV == "DDA" ~ "Checking_Account",
+           VDDASAV == "SAV" ~ "Savings_Account",
+           VDDASAV == "BOTH" ~ "Both_Accounts",
+           T ~ "None"
+         ), 
+         BAD = ifelse(BAD==1, "Default", "Good")
+         )
+
+#v.mode = function(x) {z=table(x);as.numeric(names(z[z==max(z)]))}
+#v.zero = function(x) {x[x<0] = 0;return(x)}
+rocplot =function (pred, truth, ...){
+  predob = prediction(pred, truth ) 
+  perf = performance(predob, "tpr", "fpr")
+  auc = performance(predob, measure = "auc")@y.values
+  plot(perf, ...)
+  legend("bottomright",legend = paste0("AUC=", format(auc,nsmall=2)),cex = 0.7)}
+
+credit$BRHS2X[credit$BRHS2X<0] = median(credit$BRHS2X[credit$BRHS2X>0])
+credit$BRHS3X[credit$BRHS3X<0] = median(credit$BRHS3X[credit$BRHS3X>0])
+credit$BRHS4X[credit$BRHS4X<0] = median(credit$BRHS4X[credit$BRHS4X>0])
+credit$BRHS5X[credit$BRHS5X<0] = median(credit$BRHS5X[credit$BRHS5X>0])
+
+credit$BROPEN[credit$BROPEN<0] = median(credit$BROPEN[credit$BROPEN>0])
+credit$BRTRDS[credit$BRTRDS<0] = median(credit$BRTRDS[credit$BRTRDS>0])
+credit$CFTRDS[credit$CFTRDS<0] = median(credit$CFTRDS[credit$CFTRDS>0])
+credit$CURSAT[credit$CURSAT<0] = median(credit$CURSAT[credit$CURSAT>0])
+credit$INQ012[credit$INQ012<0] = median(credit$INQ012[credit$INQ012>0])
+credit$PUBREC[credit$PUBREC<0] = median(credit$PUBREC[credit$PUBREC>0])
+
+
+credit$AGEAVG[credit$AGEAVG<=0] = median(credit$AGEAVG[credit$AGEAVG>0])
+credit$AGEOTD[credit$AGEOTD<=0] = median(credit$AGEOTD[credit$AGEOTD>0])
+credit$AUUTIL[credit$AUUTIL<=0] = median(credit$AUUTIL[credit$AUUTIL>0])
+credit$BKTIME[credit$BKTIME<=0] = 0
+credit$BROLDT[credit$BROLDT<=0] = median(credit$BROLDT[credit$BROLDT>0])
+credit$HSATRT[credit$HSATRT<=0] = median(credit$HSATRT[credit$HSATRT>0])
+credit$TOTBAL[credit$TOTBAL<=0] = median(credit$TOTBAL[credit$TOTBAL>0])
+
+sum(is.na(credit))
+credit = na.omit(credit)
+
+write.csv(apply(Filter(is.numeric, credit),2,summary),"Summary.csv")
+```
+
+# EDA - Continuous vars
+```{r EDA}
+# credit <- credit %>% mutate(CBTYPE = as.factor(CBTYPE))
+
+credit_num <- credit %>% 
+  select_if(is.numeric) %>% 
+  mutate(MNGPAY = log(MNGPAY))
+
+## distributions of continuous variables
+for (j in unique(colnames(credit_num))) {
+  p <- ggplot(credit_num, aes_string(x=j)) + 
+    geom_histogram(aes(y=..density..),col=NA, fill="lightblue") + 
+    ylab("Percent of observations") + 
+    scale_y_continuous(labels=scales::percent) +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+  print(p)
+}
+
+## bar plot of a few continuous variables
+continuous_var <- c("BSWHOL", "AGEAVG", "HSATRT", "DWNPMT")
+
+## BSWHOL
+BSWHOL_sum <- credit %>% 
+  group_by(BAD) %>%
+  summarise(
+    BSWHOL_mean = mean(BSWHOL),
+    n_BSWHOL = n(),
+    sd_BSWHOL = sd(BSWHOL),
+    se_BSWHOL = sd(BSWHOL)/sqrt(n())
+  )
+ggplot(BSWHOL_sum, aes(factor(BAD), BSWHOL_mean)) + 
+                   geom_col(width = .3, fill="lightblue", col=NA) +  
+                   geom_errorbar(aes(ymin = BSWHOL_mean - se_BSWHOL, ymax = BSWHOL_mean + se_BSWHOL), width=0.1)  +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold")) 
+
+## AGEAVG
+AGEAVG_sum <- credit %>% 
+  group_by(BAD) %>%
+  summarise(
+    AGEAVG_mean = mean(AGEAVG),
+    n_AGEAVG = n(),
+    sd = sd(AGEAVG),
+    se = sd(AGEAVG)/sqrt(n())
+  )
+ggplot(AGEAVG_sum, aes(factor(BAD), AGEAVG_mean)) + 
+                   geom_col(width = .3, fill="lightblue", col=NA) +  
+                   geom_errorbar(aes(ymin = AGEAVG_mean - se, ymax = AGEAVG_mean + se), width=0.1) +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+
+## HSATRT
+HSATRT_sum <- credit %>% 
+  group_by(BAD) %>%
+  summarise(
+    HSATRT_mean = mean(HSATRT),
+    n_HSATRT = n(),
+    sd = sd(HSATRT),
+    se = sd(HSATRT)/sqrt(n())
+  )
+ggplot(HSATRT_sum, aes(factor(BAD), HSATRT_mean)) + 
+                   geom_col(width = .3, fill="lightblue", col=NA) +  
+                   geom_errorbar(aes(ymin = HSATRT_mean - se, ymax = HSATRT_mean + se), width=0.1) +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+
+## DWNPMT
+DWNPMT_sum <- credit %>% 
+  group_by(BAD) %>%
+  summarise(
+    DWNPMT_mean = mean(DWNPMT),
+    n_DWNPMT = n(),
+    sd = sd(DWNPMT),
+    se = sd(DWNPMT)/sqrt(n())
+  )
+ggplot(DWNPMT_sum, aes(factor(BAD), DWNPMT_mean)) + 
+                   geom_col(width = .3, fill="lightblue", col=NA) +  
+                   geom_errorbar(aes(ymin = DWNPMT_mean - se, ymax = DWNPMT_mean + se), width=0.1) +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+```
+
+# EDA - Categorical variables
+
+```{r EDA_discrete}
+## Distribution of response variable
+ggplot(credit, aes(x = factor(BAD))) + 
+  geom_bar(aes(y = (..count..)/sum(..count..)), fill="lightblue", col=NA, width = .2) + 
+  scale_y_continuous(labels = scales::percent) + 
+  ylab("Relative frequencies") +
+  xlab("Default status") +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+##Discrete variables
+ggplot(credit, aes(x=BAD, group = CBTYPE)) + 
+  geom_bar(aes(y = ..prop.., fill = CBTYPE), position = "dodge") + 
+  scale_y_continuous(labels=scales::percent) +
+  ylab("relative frequencies") +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+ggplot(credit, aes(x=BAD, group = NEWUSE)) + 
+  geom_bar(aes(y = ..prop.., fill = NEWUSE), position = "dodge") + 
+  scale_y_continuous(labels=scales::percent) +
+  ylab("relative frequencies") +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+ggplot(credit, aes(x=BAD, group = VDDASAV)) + 
+  geom_bar(aes(y = ..prop.., fill = VDDASAV), position = "dodge") + 
+  scale_y_continuous(labels=scales::percent) +
+  ylab("relative frequencies") +
+    theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold"))
+
+#split
+credit <- credit %>% 
+  mutate(BAD = ifelse(BAD=="Default", 1, 0)) %>%
+  mutate_if(is.character, as.factor)
+
+set.seed(1)
+train <- sample(1:nrow(credit),nrow(credit)*2/3)
+test <- -train
+credit_test <- credit[test,]
+credit_train <- credit[train,]
+
+```
+
+
+# Fit statistical learning model
+
+```{r some hyperparms}
+depth_tree = 6
+shrink_val = .1
+bag_fraction = .5
+n_tree = 500
+```
+
+
+```{r Train the model, eval=F}
+set.seed(1)
+gbm_auto <- gbm(BAD~.,data=credit_train, distribution="bernoulli",n.trees =n_tree, interaction.depth =depth_tree, shrinkage =shrink_val, verbose =F, cv.folds = 5, bag.fraction = bag_fraction)
+
+saveRDS(gbm_auto, "gbm_auto.rds")
+```
+
+
+```{r plots of gbm}
+gbm_auto <- readRDS("gbm_auto.rds")
+
+## Learning curve
+learn_curve <- data.frame(N_trees = 1:gbm_auto$n.trees,
+                          Train_error = gbm_auto$train.error,
+                          CV_error = gbm_auto$cv.error
+                          ) %>% 
+  gather(Error_Type, Loss_function, -N_trees)
+
+learn_curve %>% ggplot() +
+  geom_line(aes(x=N_trees, y=Loss_function, col=Error_Type))
+
+## Training error vs cv error
+plot(gbm_auto$cv.error~gbm_auto$train.error, type="l", lwd=2, col="red", xlab="Training loss", ylab="CV loss")
+
+## Pick best number of tree and fit model to full training data.
+set.seed(1234)
+gbm_auto_train <- gbm(BAD ~ .,data=credit_train, distribution="bernoulli",n.trees = which.min(gbm_auto$cv.error), interaction.depth =depth_tree, shrinkage =shrink_val, verbose =F, bag.fraction = bag_fraction)
+summary(gbm_auto_train)
+
+# par(mfrow=c(1,1))
+plot(gbm_auto_train, "BSWHOL", type="response")
+plot(gbm_auto_train, "AGEAVG")
+plot(gbm_auto_train, "HSATRT")
+plot(gbm_auto_train, "DWNPMT")
+
+## Prediction in test set
+auto_test_PD = predict(gbm_auto_train,newdata =credit_test, n.trees = which.min(gbm_auto$cv.error), type = "response")
+
+rocplot(auto_test_PD, credit_test$BAD, main = "ROC for GBM on test set", col = "red")
+
+```
+
+
+```{r GAM}
+# Non-linear logit
+library(gam)
+library (akima)
+
+effective.df = 5
+collapse.var = paste(",df = ", effective.df,")+s(")
+num.var = paste(names(Filter(is.numeric,credit_num)),collapse=collapse.var)
+form = as.formula(paste("BAD ~", "s(", num.var, ",df=3)", " + NEWUSE + VDDASAV + CBTYPE",sep=""))
+
+gam.lr=gam(form, family =binomial, data=credit, subset=train)
+summary(gam.lr)
+gam.prob = predict(gam.lr, newdata = credit[-train,], type = "response")
+
+gam.pred = rep("0",nrow(credit_test))
+gam.pred[gam.prob>0.5] = "1"
+conf.matrix = table(gam.pred, credit_test$BAD); print(conf.matrix)
+(conf.matrix[1,2]+conf.matrix[2,1])/nrow(credit_test)
+conf.matrix[2,2]/sum(conf.matrix[,2])
+
+rocplot(gam.prob, credit_test$BAD, main = paste0("ROC for GAM regression\n", "(Smoothing splines df = ", effective.df,")"), col = "red")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
