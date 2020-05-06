@@ -261,7 +261,7 @@ saveRDS(gbm_auto, "gbm_auto.rds")
 ```{r plots of gbm}
 gbm_auto <- readRDS("gbm_auto.rds")
 
-## Learning curve
+## Validation curve
 learn_curve <- data.frame(N_trees = 1:gbm_auto$n.trees,
                           Train_error = gbm_auto$train.error,
                           CV_error = gbm_auto$cv.error
