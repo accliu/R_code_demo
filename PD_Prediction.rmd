@@ -1,5 +1,5 @@
 ---
-title: "Predition of default in auto loan portfolio"
+title: "Predition of default in an auto loan portfolio"
 date: "`r format(Sys.time(), '%m/%d/%Y')`"
 output: 
   html_document: 
@@ -15,7 +15,7 @@ editor_options:
 
 # Import data
 ```{r Import Data, message=FALSE, warning=FALSE}
-setwd("D:/...some little project")
+setwd("Path/to/a/small/project")
 library(readxl)
 library(glmnet)
 library(ROCR)
@@ -23,6 +23,7 @@ library(randomForest)
 library(gbm)
 library(xgboost)
 library(tidyverse)
+library(rlang)
 
 credit = read_excel("data1.xlsx",sheet = "data1")
 rownames(credit) = credit$ACCTNO
@@ -50,38 +51,57 @@ credit <- credit %>%
          BAD = ifelse(BAD==1, "Default", "Good")
          )
 
-#v.mode = function(x) {z=table(x);as.numeric(names(z[z==max(z)]))}
-#v.zero = function(x) {x[x<0] = 0;return(x)}
+## Define a ROC plot function
 rocplot =function (pred, truth, ...){
   predob = prediction(pred, truth ) 
   perf = performance(predob, "tpr", "fpr")
   auc = performance(predob, measure = "auc")@y.values
+  
   plot(perf, ...)
-  legend("bottomright",legend = paste0("AUC=", format(auc,nsmall=2)),cex = 0.7)}
+  legend("bottomright",legend = paste0("AUC=", format(auc,nsmall=2)),cex = 0.7)
+}
 
-credit$BRHS2X[credit$BRHS2X<0] = median(credit$BRHS2X[credit$BRHS2X>0])
-credit$BRHS3X[credit$BRHS3X<0] = median(credit$BRHS3X[credit$BRHS3X>0])
-credit$BRHS4X[credit$BRHS4X<0] = median(credit$BRHS4X[credit$BRHS4X>0])
-credit$BRHS5X[credit$BRHS5X<0] = median(credit$BRHS5X[credit$BRHS5X>0])
+# v.mode = function(x) {
+#   z=table(x);as.numeric(names(z[z==max(z)]))}
+#v.zero = function(x) {x[x<0] = 0;return(x)}
 
-credit$BROPEN[credit$BROPEN<0] = median(credit$BROPEN[credit$BROPEN>0])
-credit$BRTRDS[credit$BRTRDS<0] = median(credit$BRTRDS[credit$BRTRDS>0])
-credit$CFTRDS[credit$CFTRDS<0] = median(credit$CFTRDS[credit$CFTRDS>0])
-credit$CURSAT[credit$CURSAT<0] = median(credit$CURSAT[credit$CURSAT>0])
-credit$INQ012[credit$INQ012<0] = median(credit$INQ012[credit$INQ012>0])
-credit$PUBREC[credit$PUBREC<0] = median(credit$PUBREC[credit$PUBREC>0])
+## Impute missing that're indicated by negative values
+## The argument "field" is supposed to a string. 
+imput_neg <- function(dat, field) {
+  dat <- dat %>% 
+    mutate(!!field:=ifelse(UQ(field)<0,NA,UQ(field))
+           ,!!field:=if_else(is.na(UQ(field)),median(UQ(field),na.rm = T),UQ(field))
+           )
+  dat
+}
 
+## Impute missing that're indicated by non-positive values
+imput_nonposi <- function(dat, field) {
+  dat <- dat %>% 
+    mutate(!!field:=ifelse(UQ(field)<=0,NA,UQ(field))
+           ,!!field:=if_else(is.na(UQ(field)),median(UQ(field),na.rm = T),UQ(field))
+           )
+  dat
+}
 
-credit$AGEAVG[credit$AGEAVG<=0] = median(credit$AGEAVG[credit$AGEAVG>0])
-credit$AGEOTD[credit$AGEOTD<=0] = median(credit$AGEOTD[credit$AGEOTD>0])
-credit$AUUTIL[credit$AUUTIL<=0] = median(credit$AUUTIL[credit$AUUTIL>0])
-credit$BKTIME[credit$BKTIME<=0] = 0
-credit$BROLDT[credit$BROLDT<=0] = median(credit$BROLDT[credit$BROLDT>0])
-credit$HSATRT[credit$HSATRT<=0] = median(credit$HSATRT[credit$HSATRT>0])
-credit$TOTBAL[credit$TOTBAL<=0] = median(credit$TOTBAL[credit$TOTBAL>0])
+to_impute = c("BRHS2X", "BRHS3X", "BRHS4X", "BRHS5X",
+              "BROPEN", "BRTRDS", "CFTRDS", "CURSAT",
+              "INQ012", "PUBREC")
 
-sum(is.na(credit))
-credit = na.omit(credit)
+for (i in to_impute) {
+   credit <- imput_neg(credit, rlang::sym(i))
+}
+
+## Impute non-positive
+to_impute = c("AGEAVG", "AGEOTD", "AUUTIL", "BKTIME",
+              "BROLDT", "HSATRT", "TOTBAL")
+
+for (i in to_impute) {
+   credit <- imput_nonposi(credit, rlang::sym(i))
+}
+
+## Check missing count
+colSums(is.na(credit))
 
 write.csv(apply(Filter(is.numeric, credit),2,summary),"Summary.csv")
 ```
@@ -296,24 +316,5 @@ conf.matrix[2,2]/sum(conf.matrix[,2])
 rocplot(gam.prob, credit_test$BAD, main = paste0("ROC for GAM regression\n", "(Smoothing splines df = ", effective.df,")"), col = "red")
 
 ```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
