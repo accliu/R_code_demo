@@ -34,7 +34,7 @@ credit <- credit %>%
   mutate(ACCTNO = NULL,
          VAGE = ifelse(VAGE==".", NA, VAGE),
          VAGE = as.numeric(VAGE),
-         VAGE = if_else(VAGE<18 | is.na(VAGE), median(VAGE,na.rm = T), VAGE), 
+         VAGE = if_else(is.na(VAGE), median(VAGE,na.rm = T), VAGE), 
          NEWUSE = ifelse(NEWUSE=="N", "New", "Used"),
          CBTYPE = case_when(CBTYPE == 1 ~ "Record with Trades",
                             CBTYPE == 2 ~ "Record w/Inqs. and Pub Recs Only", 
