@@ -68,20 +68,18 @@ rocplot =function (pred, truth, ...){
 ## Impute missing that're indicated by negative values
 ## The argument "field" is supposed to a string. 
 imput_neg <- function(dat, field) {
-  dat <- dat %>% 
+  dat %>% 
     mutate(!!field:=ifelse(UQ(field)<0,NA,UQ(field))
            ,!!field:=if_else(is.na(UQ(field)),median(UQ(field),na.rm = T),UQ(field))
            )
-  dat
 }
 
 ## Impute missing that're indicated by non-positive values
 imput_nonposi <- function(dat, field) {
-  dat <- dat %>% 
+  dat %>% 
     mutate(!!field:=ifelse(UQ(field)<=0,NA,UQ(field))
            ,!!field:=if_else(is.na(UQ(field)),median(UQ(field),na.rm = T),UQ(field))
            )
-  dat
 }
 
 to_impute = c("BRHS2X", "BRHS3X", "BRHS4X", "BRHS5X",
