@@ -1,4 +1,4 @@
-# The programs in this repo demontrates a few R code files 
+# The programs in this repo demontrate a few R code files 
 
 ## Panel_regression_and_cluster_robust.R
 This R script delves into panel regression commonly used in Econometrics, sandwhich estimator robust standard error, and mistakes to avoid. 
