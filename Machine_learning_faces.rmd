@@ -1,0 +1,629 @@
+---
+title: "Machine Learning Exercises"
+date: "`r format(Sys.time(), '%m/%d/%Y')`"
+output: 
+  html_document: 
+    toc: true
+    toc_depth: 6
+    toc_float: true
+    df_print: paged
+    theme: journal
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r libraries, message=F, warning=F}
+library(tidyverse)
+library(ggplot2)
+library(gbm)
+# library(class)
+library(neuralnet)
+library(xgboost)
+library(randomForest)
+library(caret)
+library(dann)
+library(e1071)
+library(Rcpp)
+```
+
+## 1. The faces in the wild data - face recognition
+Data from scikit-learn package. Persons with more than 60 face figures were extracted. The following is the first few records in the data. 
+```{r Faces in the wild}
+setwd('D:/Analysis/R_analysis/DS/faces_in_wild')
+save_dir <- 'D:/Analysis/R_analysis/DS/faces_in_wild'
+
+faces <- read.csv('faces_in_the_wild.csv', header = T)
+faces$target <- as.factor(faces$target + 1)
+
+# image function read matrix in a different way as we look at the the matrix. It takes the last row of the matrix first, and then rotate it anti-clockwise 90 degrees. Then, it take the 2nd row from the last and do the same. ex. a=matrix(c(1,0,2,0,1,0,0,0,0), nrow=3, byrow = T); image(t(apply(a,2,rev))). Have to first reverse and then transpose.  
+
+par(mfrow=c(3,5))
+par(mar=c(1,1,1,1))
+for (i in 1:15) {
+  im <- matrix(unlist(faces[i,1:(62*47)]), nrow = 62, ncol = 47, byrow=T)
+  im <- apply(im, 2, rev)
+  image(t(im), axes = F, col = grey(seq(0, 1, length = 256)), main = faces[,ncol(faces)][i], cex.main = .8, col.main = 'black')
+}
+
+par(mfrow=c(1,1))
+par(mar=c(5, 4, 4, 2) + 0.1)
+
+# Train test split
+faces <- faces %>%
+  mutate(ID = 1:n()) 
+
+set.seed(1)
+train_df_raw <- faces %>%
+  group_by(target) %>%
+  sample_frac(size = .75, replace = F)
+
+test_df_raw <- faces[!faces$ID %in% train_df_raw$ID, ]
+train_df_raw$ID <- NULL
+test_df_raw$ID <- NULL
+
+run_PCA = F
+
+if (run_PCA) {
+  train_df_PC <- prcomp(train_df_raw[,0:1-ncol(train_df_raw)], center = T, scale. = T)
+  saveRDS(train_df_PC, 'train_df_PC.rds')
+} else {
+  train_df_PC <- read_rds('train_df_PC.rds')
+}
+
+
+ggplot(data.frame(Index_Eigen=1:length(train_df_PC$sdev),
+                  Percent_Var=cumsum(train_df_PC$sdev^2)/sum(train_df_PC$sdev^2)), 
+       aes(x=Index_Eigen, Percent_Var)) + geom_point() +
+  ylab('Percent of variance explained') + 
+  xlab('Eigenvalue Index') + 
+  ggtitle('PCA of the training set - ~150 PCs appropirate')
+
+train_df <- cbind.data.frame(train_df_PC$x[,1:150],
+                             target = train_df_raw$target) 
+test_df <- predict(train_df_PC,
+                   test_df_raw[,0:1-ncol(test_df_raw)])[,1:150]
+  
+```
+
+Each image contains 2914 pixels, and so use PCA to reduce dimension. A PCA analysis is as shown above. And, ~150 PCs should suffice. 
+
+
+## 2. The KNN model
+### 2.1 The regular KNN 
+
+```{r KNN}
+# 8-bit color for each pixel (averaged from 24 bitRGB), so the features are on the same scale. Standardization may not be needed. 
+# The following train and fit use functions from the caret package. 
+
+trControl <- trainControl(method  = "cv", number  = 5)
+run_it = F
+
+if (run_it) {
+  set.seed(1234)
+  knn <- train(target ~ .,
+               method     = "knn",
+               tuneGrid   = expand.grid(k = 1:60),
+               trControl  = trControl,
+               metric     = "Accuracy",
+               data       = train_df)
+  saveRDS(knn, paste0(save_dir, "/knn.rds"))
+  
+  set.seed(1234)
+  knn_final <- knn3(target ~ ., data = train_df, k = knn$bestTune$k)
+  saveRDS(knn_final,paste0(save_dir, "/knn_final.rds"))
+  
+} else {
+  knn <- readRDS(paste0(save_dir, "/knn.rds"))
+  knn_final <- readRDS(paste0(save_dir, "/knn_final.rds"))
+}
+
+ggplot(knn) + ggtitle('Validatoin curve of KNN')
+
+set.seed(123)
+test_pred <- predict(knn_final, newdata = as.data.frame(test_df), type = 'class')
+
+knn_accuracy <- sum(test_df_raw$target==test_pred)/length(test_pred)
+
+confusion_knn <- as.data.frame.matrix(table(Reference=test_df_raw$target, Prediction=test_pred))
+confusion_knn <- apply(confusion_knn, 2, function(x) x/rowSums(confusion_knn))
+
+confusion_knn <- confusion_knn %>%
+  as.data.frame() %>%
+  mutate(Actual = as.character(rownames(.))) %>%
+  pivot_longer(1:8, names_to = 'Predicted', values_to = 'Freq')
+
+ggplot(confusion_knn, aes(y = Actual, x = Predicted)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = formattable::percent(Freq, 1)), vjust = .5, size = 3) +
+  scale_fill_gradient(low = "yellow", high = "red") +
+  theme_bw() + 
+  # theme(legend.position = "none") +
+  ggtitle('KNN confusion matrix on test set') + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
+
+```
+
+The accuracy of KNN is: `r formattable::percent(knn_accuracy, 2)`.
+<hr style="height:2px;border-width:0;color:gray;background-color:gray">
+
+### 2.2 1NN to gain information about Bayes error
+
+#### 2.2.1 1NN to gain information about Bayes error - Simulated data
+_Asymptotically, 1NN error is never more than twice the Bayes error._
+
+```{r Simulated ex}
+num_obs = 5000
+set.seed(1)
+x1=matrix(rnorm(num_obs*2), ncol=2)
+
+set.seed(2)
+n = 1
+x2 = data.frame()
+while (n<=num_obs) {
+  rx <- as.data.frame(matrix(rnorm(num_obs*2, sd = 1), ncol = 2))
+  rx <- rx[sqrt(rx[,1]^2+rx[,2]^2)>2, ]
+  x2 <- rbind.data.frame(x2, rx)
+  n <- nrow(x2)
+}
+
+df <- rbind.data.frame(x1, x2[1:num_obs, ]) %>%
+  mutate(label = as.factor(c(rep(-1,num_obs), rep(1 ,num_obs))))
+
+# plot(df, col=3-label)
+
+ggplot(df, aes(x=V1, y=V2, col=label)) + 
+  geom_point() + 
+  ggtitle('A simulated classification problem for 1NN')
+
+set.seed(3)
+train_id <- base::sample(1:nrow(df), floor(nrow(df)*.75))
+sim_train <- df[train_id,]
+sim_test <- df[-train_id,]
+
+our_circle_G1 = df[df$label==-1 & sqrt(df[,1]^2+df[,2]^2)>2, ]
+
+
+```
+
+
+```{r 1NN}
+OneNN_final <- knn3(label ~ ., data = sim_train, k = 1)
+
+set.seed(123)
+test_pred_1nn <- predict(OneNN_final, newdata = sim_test, type = 'class')
+
+```
+
+The 1NN error on the test data is: `r formattable::percent(1 - sum(sim_test$label==test_pred_1nn)/length(test_pred_1nn), 2)`. So, the Bayes error must be more than `r formattable::percent((1 - sum(sim_test$label==test_pred_1nn)/length(test_pred_1nn))/2, 2)`. The theoretical Bayes error (calculated from this trial) is `r formattable::percent(nrow(our_circle_G1)/num_obs/2, 2)`. Nonetheless, in practice, the asymptotic part is always in doubt. 
+
+
+#### 2.2.2 1NN to gain information about Bayes error - face data
+```{r 1NN face}
+OneNN_final <- knn3(target ~ ., data = train_df, k = 1)
+
+set.seed(123)
+test_pred_1nn <- predict(OneNN_final, newdata = as.data.frame(test_df), type = 'class')
+
+```
+
+The 1NN error on the test data is: `r formattable::percent(1 - sum(test_df_raw$target==test_pred_1nn)/length(test_pred_1nn), 2)`. So, the Bayes error must be more than `r formattable::percent((1 - sum(test_df_raw$target==test_pred_1nn)/length(test_pred_1nn))/2, 2)`.
+
+
+### 2.3 The Nested Cross Validation (NCV)
+CV error is too optimistic. NCV is used to assess model error and stability. The following are NCV for KNN and SVM models using simulated data as earlier but with different sizes. 
+```{r NCV, results='asis', message=F, warning=F}
+save_dir <- 'D:/Analysis/R_analysis/DS/faces_in_wild'
+num_obs = 5000
+set.seed(1)
+x1=matrix(rnorm(num_obs*2), ncol=2)
+
+set.seed(2)
+n = 1
+x2 = data.frame()
+while (n<=num_obs) {
+  rx <- as.data.frame(matrix(rnorm(num_obs*2, sd = 1), ncol = 2))
+  rx <- rx[sqrt(rx[,1]^2+rx[,2]^2)>2, ]
+  x2 <- rbind.data.frame(x2, rx)
+  n <- nrow(x2)
+}
+
+df <- rbind.data.frame(x1, x2[1:num_obs, ]) %>%
+  mutate(label = as.factor(c(rep(-1,num_obs), rep(1 ,num_obs))))
+
+# ggplot(df, aes(x=V1, y=V2, col=label)) + 
+#   geom_point() + 
+#   ggtitle('A simulated classification problem for 1NN')
+
+
+trControl <- trainControl(method  = "cv", number  = 5)
+run_ncv_KNN = F
+K_CV <- 10
+folds = sample(1:K_CV, nrow(df), replace = T)
+ncv_accuracy <- data.frame()
+
+if (run_ncv_KNN) {
+  
+  for (j in 1:K_CV) {
+      train_ncv = df[folds!=j,]
+      test_ncv = df[folds==j,]
+      
+      set.seed(j)
+      knn_ncv <- train(label ~ .,
+                       method     = "knn",
+                       tuneGrid   = expand.grid(k = 1:30),
+                       trControl  = trControl,
+                       metric     = "Accuracy",
+                       data       = train_ncv)
+
+      set.seed(j)
+      knn_final_ncv <- knn3(label ~ ., data = train_ncv, k = knn_ncv$bestTune$k)
+      
+      knn_ncv_pred <- predict(knn_final_ncv, newdata = test_ncv, type = 'class')
+      accuracy_test_ncv=sum(knn_ncv_pred==test_ncv$label)/length(knn_ncv_pred)
+      
+      ncv_accuracy=rbind(ncv_accuracy,data.frame(trial=j,accuracy_test_ncv=accuracy_test_ncv))
+      
+      cat('Now ', j, "th NCV fold\n")
+  }
+  
+  saveRDS(ncv_accuracy,paste0(save_dir, "/ncv_accuracy_KNN.rds"))
+  
+} else {
+  ncv_accuracy_KNN <- readRDS(paste0(save_dir, "/ncv_accuracy_KNN.rds"))
+}
+
+
+##-------------------------------------##
+## SVM NCV
+##-------------------------------------##
+num_obs = 2000
+set.seed(1)
+x1=matrix(rnorm(num_obs*2), ncol=2)
+
+set.seed(2)
+n = 1
+x2 = data.frame()
+while (n<=num_obs) {
+  rx <- as.data.frame(matrix(rnorm(num_obs*2, sd = 1), ncol = 2))
+  rx <- rx[sqrt(rx[,1]^2+rx[,2]^2)>2, ]
+  x2 <- rbind.data.frame(x2, rx)
+  n <- nrow(x2)
+}
+
+df <- rbind.data.frame(x1, x2[1:num_obs, ]) %>%
+  mutate(label = as.factor(c(rep(-1,num_obs), rep(1 ,num_obs))))
+run_ncv_SVM = F
+K_CV <- 5
+folds = sample(1:K_CV, nrow(df), replace = T)
+ncv_accuracy <- data.frame()
+
+if (run_ncv_SVM) {
+  
+  for (j in 1:K_CV) {
+      train_ncv = df[folds!=j,]
+      test_ncv = df[folds==j,]
+      
+      set.seed(j)
+      svm_tuned <- tune(svm, label~., data = train_ncv, 
+                ranges = list(gamma =c(.0025,.005,.01,.02,.05),
+                              cost = c(20,30,50,100)),
+                tunecontrol = tune.control(sampling = "cross", 
+                                           cross = 5),
+                kernel = "radial"
+               )
+      
+      svm_pred <- predict(svm_tuned$best.model, newdata = test_ncv)
+      svm_accuracy <- sum(test_ncv$label==svm_pred)/length(svm_pred)
+
+      ncv_accuracy=rbind(ncv_accuracy,data.frame(trial=j,accuracy_test_ncv=svm_accuracy))
+      
+      cat('Now ', j, "th NCV fold\n")
+  }
+  
+  saveRDS(ncv_accuracy,paste0(save_dir, "/ncv_accuracy_SVM.rds"))
+  
+} else {
+  ncv_accuracy_SVM <- readRDS(paste0(save_dir, "/ncv_accuracy_SVM.rds"))
+}
+
+library(kableExtra)
+show(kable(ncv_accuracy_KNN,align='c',digits = 2,escape = T,
+           caption = 'Nested CV for the KNN model') %>%
+       kable_styling(bootstrap_options = c("striped", "hover", "condensed")))
+
+show(kable(ncv_accuracy_SVM,align='c',digits = 2,escape = T,
+           caption = 'Nested CV for the SVM model') %>%
+       kable_styling(bootstrap_options = c("striped", "hover", "condensed")))
+
+```
+
+
+### 2.4 Naive Bayes
+```{r NB}
+face_nb <- naiveBayes(target~., data = train_df)
+nb_pred <- predict(face_nb, newdata = test_df, type = 'class')
+
+nb_accuracy <- sum(test_df_raw$target==nb_pred)/length(nb_pred)
+```
+
+The accuracy of KNN is: `r formattable::percent(nb_accuracy, 2)`. It performs better than KNN as well as random forest. 
+<hr style="height:2px;border-width:0;color:gray;background-color:gray">
+
+## 3. Random Forest
+**The Random Forest:**
+
+  + Unlike a single decision tree, which is notorious for its variability, random forest builds a multitude of trees.
+  + The forest makes a de1cision based on a collective majority vote of all the individual trees in a classification problem. The joint effort helps to reduce variance brought about by a single decision tree.
+  + Just a portion of the predictors are randomly selected to split a parent node, and this will help dampen the effect of the predominant predictors, decreasing variability in prediction.  
+  + Lower tendency towards over-fitting. 
+  + Small number of hyper-parameters to tune compared with Boosting/XGBoost. 
+  + Random forests use out of bag sample and error (OOB error) to measure out of sample performance, and the favorable aspect is that the OOB errors can be produced during the training process.
+
+![](random_forest.png)
+[Random Forecast: Click to go to chart source](https://www.analyticsvidhya.com/blog/2020/05/decision-tree-vs-random-forest-algorithm/)
+<hr style="height:2px;border-width:0;color:gray;background-color:gray">
+### 3.1 Hyper-parameter tuning and model fitting
+```{r Random Forest, message=F, warning=F, include=F, eval=F}
+run_rf = F
+
+if (run_rf) {
+  tree_size = seq(100, 900, 100)
+  node_size = seq(1,30,2)
+  Tune_params = data.frame()
+  
+  for (j in node_size) {
+    for (i in tree_size) {
+      set.seed(i)
+      
+      mtry_plot <- tuneRF(x = train_df[, -ncol(train_df)], 
+                          y = train_df[, ncol(train_df)],
+                          ntreeTry = i, mtryStart = 2, stepFactor = 1.5,
+                          trace = F, plot = F, nodesize = j, 
+                          improve = .03)
+  
+      # The print outs are percentage improvement of OOB error compared with the last mtry round on the left column and the right column shows the threshold which is the 'improve' parameter in the tuneRF function. Positive improvement means OOB error gets better. 
+      
+  # This block of code prints validation curves, but there're too many charts. Omit the charts for a cleaner notebook.
+  #     p <- ggplot(as.data.frame(mtry_plot), aes(x = mtry, y = OOBError)) +
+  #       geom_line() + 
+  #       geom_point() +
+  #       labs(y = 'OOB Error', title = paste0('Tune mtry when ', i, ' trees are grown with minimum node size ', j)) + 
+  #       theme(plot.title = element_text(size=10))
+  #     print(p)
+        
+        
+      Tune_params <- mtry_plot %>% 
+        as.data.frame() %>%
+        mutate(No_trees = i,
+               Node_size = j) %>%
+        bind_rows(Tune_params)
+        
+        cat('Now working on node size ', j, ' and ', i, ' trees.\n')
+    }
+  }
+  
+  saveRDS(Tune_params, 'Tune_params_rf_all.rds')
+  
+  best_param_set <- Tune_params %>%
+    filter(OOBError == min(OOBError))
+  
+  saveRDS(best_param_set, paste0(save_dir, '/best_param_set_rf.rds'))
+}
+
+```
+
+At the lowest OOB error, the best parameters are:
+
+```{r print RF best params, results='asis', message=F, warning=F}
+library(kableExtra)
+best_param_set <- readRDS(paste0(save_dir, '/best_param_set_rf.rds'))
+
+show(kable(best_param_set,align='c',digits = 2,escape = T,
+           caption = 'Best Parameters for the Random Forest Model') %>%
+       kable_styling(bootstrap_options = c("striped", "hover", "condensed")))
+
+```
+
+
+
+```{r RF best, eval=F}
+chosen_mtry <- best_param_set$mtry
+chosen_tree_num <- best_param_set$No_trees
+chosen_node_size <- best_param_set$Node_size
+
+# Use # of trees as random seed.
+set.seed(chosen_tree_num)
+rf <- randomForest(target ~ ., data = train_df, 
+                        importance =TRUE, ntree = chosen_tree_num, 
+                        mtry = chosen_mtry, 
+                        node_size = chosen_node_size)
+
+saveRDS(rf, paste0(save_dir, '/rf.rds'))
+```
+<hr style="height:2px;border-width:0;color:gray;background-color:gray">
+
+### 3.2 The Random Forest Model Performance
+#### 3.2.1 The Confusion Matrix
+```{r Test set}
+rf <- readRDS(paste0(save_dir, '/rf.rds'))
+
+# yhat_rf <- predict(rf, newdata = test_df, type = 'prob')
+
+# Predict class instead of prob
+yhat_rf_class <- predict(rf, newdata = test_df, type = 'response')
+
+lookup_tab <- as.data.frame(table(test_df_raw$target, test_df_raw$target_names))
+lookup_tab <- lookup_tab[lookup_tab$Freq != 0, ]
+lookup_tab$Freq <- NULL
+lookup_tab$Var1 <- as.integer(lookup_tab$Var1)
+
+test_df_new <- test_df_raw %>%
+  mutate(Predicted_class = as.integer(yhat_rf_class)) %>%
+  left_join(lookup_tab, by = c("Predicted_class"="Var1")) %>%
+  rename(Predicted_target = Predicted_class, 
+         Predicted_class = Var2) %>%
+  rename(Actual = target_names) 
+# %>%
+#   select(-starts_with('Pixel'))
+
+```
+
+The confusion matrix can show the model prediction vs the actual:
+
+#### 3.2.2 The notch difference plot
+```{r confusion matrix, comment=NA}
+rf_test_tab <- as.data.frame.matrix(table(Actual=test_df_raw$target,
+      Predicted=test_df_new$Predicted_target))
+
+rf_test_tab <- apply(rf_test_tab, 2, function(x) x/rowSums(rf_test_tab))
+
+rf_test_tab <- rf_test_tab %>%
+  as.data.frame() %>%
+  mutate(Actual = as.character(rownames(.))) %>%
+  pivot_longer(1:8, names_to = 'Predicted', values_to = 'Freq')
+
+ggplot(rf_test_tab, aes(x = Actual, y = Predicted)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = formattable::percent(Freq, 1)), vjust = .5, size = 3) +
+  scale_fill_gradient(low = "yellow", high = "red") +
+  coord_flip() +
+  theme_bw() + 
+  # theme(legend.position = "none") +
+  ggtitle('RF confusion matrix on test set') + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
+```
+
+There are totally `r nrow(test_df_new)` obligors in the test data set. Model prediction accuracy in test data is: `r formattable::percent(sum(test_df_new$Actual==test_df_new$Predicted_class)/nrow(test_df_new), 2)`
+
+<hr style="height:2px;border-width:0;color:gray;background-color:gray">
+
+
+```{r Notch difference, results='asis'}
+notch_accuracy = function(d = 1, confusion_Matrix=confuse_matrix){
+  n = ncol(confusion_Matrix)
+  confusion_Matrix = as.matrix(confusion_Matrix)
+  match = sum(diag(confusion_Matrix))
+  if (d > 0) {
+    notch_increment = sum(sapply(1:(n-1), function(j) sum(confusion_Matrix[j, j+1:min(d,n-j)])+sum(confusion_Matrix[j+1:min(d,n-j),j])));match=match+notch_increment}
+  match/sum(confusion_Matrix)
+}
+
+##notch difference plot
+
+confuse_matrix = as.data.frame.matrix(table(Actual=test_df_new$target, Predicted=test_df_new$Predicted_target))
+dim_confusion <- 1:nrow(confuse_matrix)-1
+
+notch_diff = sapply(dim_confusion,notch_accuracy,confusion_Matrix=confuse_matrix)
+
+notch_dif_tab = matrix(notch_diff,nrow = 1);colnames(notch_dif_tab)=as.character(colnames(confuse_matrix))
+
+show(kable(notch_dif_tab,align='c',digits = 4,escape = T,caption = paste0("Notch difference table - Random Forest")) %>% kable_styling(bootstrap_options = c("striped", "hover", "condensed")))
+
+barplot(notch_diff, col = c("deepskyblue"),xlab = "Notch Difference",ylab = "Accuracy",border = NA, space = .5,names.arg = (colnames(confuse_matrix)),main=paste0("Notch Difference Plot - Random Forest"),cex.main=.9, width = .5)
+
+```
+
+
+#### 3.2.3 The predicted vs actual images
+```{r Accuracy image plot}
+par(mfrow=c(4,6))
+par(mar=c(1,1,1,1))
+
+for (i in 1:24) {
+  im <- matrix(unlist(test_df_new[i,1:(62*47)]), nrow = 62, ncol = 47, byrow=T)
+  im <- apply(im, 2, rev)
+  main_col = ifelse(test_df_new[i,"target"]==test_df_new[i,"Predicted_target"], 'black', 'red')
+  image(t(im), axes = F, col = grey(seq(0, 1, length = 256)), main = test_df_new[,"Actual"][i], cex.main = .8, col.main = main_col)
+}
+
+par(mfrow=c(1,1))
+par(mar=c(5, 4, 4, 2) + 0.1)
+```
+
+
+## 4. The Support Vector Machine (SVM)
+SVM improves substantially from the previous two learners. 
+```{r SVM, eval=F}
+run_svm <- F
+
+if (run_svm) {
+  set.seed(1234)
+  svm_tuned <- tune(svm, target~., data = train_df, 
+                ranges = list(gamma = c(.0005,.001,.0025,.005,.01,.02,.05),
+                              cost = seq(5,100,by=5)),
+                tunecontrol = tune.control(sampling = "cross", cross = 5),
+              kernel = "radial"
+               )
+  
+  summary(svm_tuned)
+  
+  saveRDS(svm_tuned, 'svm_tuned.rds')
+}
+
+svm_pred <- predict(svm_tuned$best.model, newdata = test_df)
+svm_accuracy <- sum(test_df_raw$target==svm_pred)/length(svm_pred)
+
+```
+
+```{r read svm stored}
+svm_tuned <- readRDS(paste0(save_dir,'/svm_tuned.rds'))
+svm_pred <- predict(svm_tuned$best.model, newdata = test_df)
+svm_accuracy <- sum(test_df_raw$target==svm_pred)/length(svm_pred)
+```
+
+The accuracy of SVM is: `r formattable::percent(svm_accuracy, 2)`. The following shows the prediction among the first 24 images. Images labeled in red are miss-classified. 
+
+```{r SVM plot}
+par(mfrow=c(4,6))
+par(mar=c(1,1,1,1))
+obs_id <- sample(1:nrow(test_df_raw), 24)
+
+for (i in 1:24) {
+  im <- matrix(unlist(test_df_raw[i,1:(62*47)]), nrow = 62, ncol = 47, byrow=T)
+  im <- apply(im, 2, rev)
+  main_col = ifelse(test_df_raw[i,"target"]==svm_pred[i], 'black', 'red')
+  image(t(im), axes = F, col = grey(seq(0, 1, length = 256)), main = test_df_raw[,"target_names"][i], cex.main = .8, col.main = main_col)
+}
+
+par(mfrow=c(1,1))
+par(mar=c(5, 4, 4, 2) + 0.1)
+```
+
+
+```{r svm confusion matrix}
+svm_test_new <- test_df_raw[,tail(names(test_df_raw),2)]
+
+svm_test_new <- svm_test_new %>%
+  mutate(Predicted_class = as.integer(svm_pred)) %>%
+  left_join(lookup_tab, by = c("Predicted_class"="Var1")) %>%
+  rename(Predicted_target = Predicted_class, 
+         Predicted_class = Var2) %>%
+  rename(Actual = target_names) 
+
+# svm_test_tab <- as.data.frame(table(Actual=svm_test_new$target, Predicted=svm_test_new$Predicted_target))
+svm_test_tab <- as.data.frame.matrix(table(Actual=svm_test_new$Actual, Predicted=svm_test_new$Predicted_class))
+
+svm_test_tab <- apply(svm_test_tab, 2, function(x) x/rowSums(svm_test_tab))
+
+svm_test_tab <- svm_test_tab %>%
+  as.data.frame() %>%
+  mutate(Actual = as.character(rownames(.))) %>%
+  pivot_longer(1:8, names_to = 'Predicted', values_to = 'Freq')
+
+ggplot(svm_test_tab, aes(x = Actual, y = Predicted)) +
+  geom_tile(aes(fill = Freq), colour = "white") +
+  geom_text(aes(label = formattable::percent(Freq, 1)), vjust = .5, size = 3) +
+  scale_fill_gradient(low = "yellow", high = "red") +
+  coord_flip() +
+  theme_bw() + 
+  # theme(legend.position = "none") +
+  ggtitle('SVM confusion matrix on test set') + 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
+
+
+```
+
+
+
+
